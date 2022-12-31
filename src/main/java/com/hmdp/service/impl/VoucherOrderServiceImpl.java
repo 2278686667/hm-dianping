@@ -51,7 +51,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     private BlockingQueue<VoucherOrder> orders=new ArrayBlockingQueue<>(1024*1024);
     //异步线程池
     private static final ExecutorService EXECUTOR_SERVICE= Executors.newSingleThreadExecutor();
-    private IVoucherOrderService proxy = (IVoucherOrderService) AopContext.currentProxy();
+
     //线程池
     static {
         SECKILL_SCRIPT =new DefaultRedisScript<>();
@@ -65,31 +65,37 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         EXECUTOR_SERVICE.submit(new VoucherOrderHandler());
 
     }
+    private IVoucherOrderService proxy;
     public class VoucherOrderHandler implements Runnable{
 
         @Override
         public void run() {
-            try {
-                VoucherOrder take = orders.take();
-            } catch (InterruptedException e) {
-                e.printStackTrace();
+            while (true){
+                try {
+                    VoucherOrder take = orders.take();
+                    handlerVoucherOrder(take);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                    log.error("处理订单异常",e);
+                }
             }
         }
-
-        public void handlerVoucherOrder(VoucherOrder voucherOrder) {
+        //处理订单
+        private void handlerVoucherOrder(VoucherOrder voucherOrder) {
             Long userId = voucherOrder.getUserId();
             RLock ilock = redissonClient.getLock("lock:order:" + userId);
-        Boolean aBoolean = ilock.tryLock();
-        //表示获取锁失败
-        if (!aBoolean){
-            log.error("一人一单");
-            return;
-        }
-        try {
-             proxy.createVoucherOrder(voucherOrder);
-        }  finally {
-            ilock.unlock();
-        }
+            Boolean aBoolean = ilock.tryLock();
+            //表示获取锁失败
+            if (!aBoolean){
+                log.error("一人一单");
+                return;
+            }
+            try {
+                //创建订单
+                 proxy.createVoucherOrder(voucherOrder);
+            }  finally {
+                ilock.unlock();
+            }
 
 
         }
@@ -122,6 +128,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         //用户id
         voucherOrder.setUserId(userId);
         //放入阻塞队列中
+        orders.add(voucherOrder);
+        //获取代理对象
+        proxy = (IVoucherOrderService) AopContext.currentProxy();
         //3、返回订单id
         return Result.ok(orderId);
 
